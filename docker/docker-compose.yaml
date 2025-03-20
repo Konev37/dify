@@ -252,6 +252,13 @@ x-shared-env: &shared-api-worker-env
   OCEANBASE_VECTOR_DATABASE: ${OCEANBASE_VECTOR_DATABASE:-test}
   OCEANBASE_CLUSTER_NAME: ${OCEANBASE_CLUSTER_NAME:-difyai}
   OCEANBASE_MEMORY_LIMIT: ${OCEANBASE_MEMORY_LIMIT:-6G}
+  OPENGAUSS_HOST: ${OPENGAUSS_HOST:-opengauss}
+  OPENGAUSS_PORT: ${OPENGAUSS_PORT:-6600}
+  OPENGAUSS_USER: ${OPENGAUSS_USER:-postgres}
+  OPENGAUSS_PASSWORD: ${OPENGAUSS_PASSWORD:-Dify@123}
+  OPENGAUSS_DATABASE: ${OPENGAUSS_DATABASE:-dify}
+  OPENGAUSS_MIN_CONNECTION: ${OPENGAUSS_MIN_CONNECTION:-1}
+  OPENGAUSS_MAX_CONNECTION: ${OPENGAUSS_MAX_CONNECTION:-5}
   UPSTASH_VECTOR_URL: ${UPSTASH_VECTOR_URL:-https://xxx-vector.upstash.io}
   UPSTASH_VECTOR_TOKEN: ${UPSTASH_VECTOR_TOKEN:-dify}
   UPLOAD_FILE_SIZE_LIMIT: ${UPLOAD_FILE_SIZE_LIMIT:-15}
@@ -315,6 +322,7 @@ x-shared-env: &shared-api-worker-env
   SSRF_PROXY_HTTPS_URL: ${SSRF_PROXY_HTTPS_URL:-http://ssrf_proxy:3128}
   LOOP_NODE_MAX_COUNT: ${LOOP_NODE_MAX_COUNT:-100}
   MAX_TOOLS_NUM: ${MAX_TOOLS_NUM:-10}
+  MAX_PARALLEL_LIMIT: ${MAX_PARALLEL_LIMIT:-10}
   TEXT_GENERATION_TIMEOUT_MS: ${TEXT_GENERATION_TIMEOUT_MS:-60000}
   PGUSER: ${PGUSER:-${DB_USERNAME}}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${DB_PASSWORD}}
@@ -424,7 +432,8 @@ x-shared-env: &shared-api-worker-env
 services:
   # API service
   api:
-    image: langgenius/dify-api:1.0.1
+    image: langgenius/dify-api:1.1.0
+#    restart: always
     restart: no
     environment:
       # Use the shared environment variables.
@@ -451,7 +460,8 @@ services:
   # worker service
   # The Celery worker for processing the queue.
   worker:
-    image: langgenius/dify-api:1.0.1
+    image: langgenius/dify-api:1.1.0
+#    restart: always
     restart: no
     environment:
       # Use the shared environment variables.
@@ -475,7 +485,8 @@ services:
 
   # Frontend web application.
   web:
-    image: langgenius/dify-web:1.0.1
+    image: langgenius/dify-web:1.1.0
+#    restart: always
     restart: no
     environment:
       CONSOLE_API_URL: ${CONSOLE_API_URL:-}
@@ -491,11 +502,12 @@ services:
       PM2_INSTANCES: ${PM2_INSTANCES:-2}
       LOOP_NODE_MAX_COUNT: ${LOOP_NODE_MAX_COUNT:-100}
       MAX_TOOLS_NUM: ${MAX_TOOLS_NUM:-10}
+      MAX_PARALLEL_LIMIT: ${MAX_PARALLEL_LIMIT:-10}
 
   # The postgres database.
   db:
     image: postgres:15-alpine
-    restart: no
+    restart: always
     environment:
       PGUSER: ${PGUSER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-difyai123456}
@@ -519,7 +531,7 @@ services:
   # The redis cache.
   redis:
     image: redis:6-alpine
-    restart: no
+    restart: always
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD:-difyai123456}
     volumes:
@@ -533,7 +545,7 @@ services:
   # The DifySandbox
   sandbox:
     image: langgenius/dify-sandbox:0.2.10
-    restart: no
+    restart: always
     environment:
       # The DifySandbox configurations
       # Make sure you are changing this key for your deployment with a strong key.
@@ -555,7 +567,8 @@ services:
 
   # plugin daemon
   plugin_daemon:
-    image: langgenius/dify-plugin-daemon:0.0.4-local
+    image: langgenius/dify-plugin-daemon:0.0.5-local
+#    restart: always
     restart: no
     environment:
       # Use the shared environment variables.
@@ -586,7 +599,7 @@ services:
   # https://docs.dify.ai/learn-more/faq/install-faq#id-18.-why-is-ssrf_proxy-needed
   ssrf_proxy:
     image: ubuntu/squid:latest
-    restart: no
+    restart: always
     volumes:
       - ./ssrf_proxy/squid.conf.template:/etc/squid/squid.conf.template
       - ./ssrf_proxy/docker-entrypoint.sh:/docker-entrypoint-mount.sh
@@ -626,7 +639,7 @@ services:
   # used for reverse proxying the API service and Web service.
   nginx:
     image: nginx:latest
-    restart: no
+    restart: always
     volumes:
       - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template
       - ./nginx/proxy.conf.template:/etc/nginx/proxy.conf.template
@@ -668,7 +681,7 @@ services:
     profiles:
       - ''
       - weaviate
-    restart: no
+    restart: always
     volumes:
       # Mount the Weaviate data directory to the con tainer.
       - ./volumes/weaviate:/var/lib/weaviate
@@ -692,7 +705,7 @@ services:
     image: langgenius/qdrant:v1.7.3
     profiles:
       - qdrant
-    restart: no
+    restart: always
     volumes:
       - ./volumes/qdrant:/qdrant/storage
     environment:
@@ -703,7 +716,7 @@ services:
     build: ./couchbase-server
     profiles:
       - couchbase
-    restart: no
+    restart: always
     environment:
       - CLUSTER_NAME=dify_search
       - COUCHBASE_ADMINISTRATOR_USERNAME=${COUCHBASE_USER:-Administrator}
@@ -736,7 +749,7 @@ services:
     image: pgvector/pgvector:pg16
     profiles:
       - pgvector
-    restart: no
+    restart: always
     environment:
       PGUSER: ${PGVECTOR_PGUSER:-postgres}
       # The password for the default postgres user.
@@ -763,7 +776,7 @@ services:
     image: tensorchord/pgvecto-rs:pg16-v0.3.0
     profiles:
       - pgvecto-rs
-    restart: no
+    restart: always
     environment:
       PGUSER: ${PGVECTOR_PGUSER:-postgres}
       # The password for the default postgres user.
@@ -785,7 +798,7 @@ services:
     image: ghcr.io/chroma-core/chroma:0.5.20
     profiles:
       - chroma
-    restart: no
+    restart: always
     volumes:
       - ./volumes/chroma:/chroma/chroma
     environment:
@@ -798,7 +811,7 @@ services:
     image: quay.io/oceanbase/oceanbase-ce:4.3.3.0-100000142024101215
     profiles:
       - oceanbase
-    restart: no
+    restart: always
     volumes:
       - ./volumes/oceanbase/data:/root/ob
       - ./volumes/oceanbase/conf:/root/.obd/cluster
@@ -815,7 +828,7 @@ services:
     image: container-registry.oracle.com/database/free:latest
     profiles:
       - oracle
-    restart: no
+    restart: always
     volumes:
       - source: oradata
         type: volume
@@ -930,13 +943,35 @@ services:
     depends_on:
       - opensearch
 
+  # opengauss vector database.
+  opengauss:
+    image: opengauss/opengauss:7.0.0-RC1
+    profiles:
+      - opengauss
+    privileged: true
+    restart: always
+    environment:
+      GS_USERNAME: ${OPENGAUSS_USER:-postgres}
+      GS_PASSWORD: ${OPENGAUSS_PASSWORD:-Dify@123}
+      GS_PORT: ${OPENGAUSS_PORT:-6600}
+      GS_DB: ${OPENGAUSS_DATABASE:-dify}
+    volumes:
+      - ./volumes/opengauss/data:/var/lib/opengauss/data
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -lntp | grep tcp6 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    ports:
+      - ${OPENGAUSS_PORT:-6600}:${OPENGAUSS_PORT:-6600}
+
   # MyScale vector database
   myscale:
     container_name: myscale
     image: myscale/myscaledb:1.6.4
     profiles:
       - myscale
-    restart: no
+    restart: always
     tty: true
     volumes:
       - ./volumes/myscale/data:/var/lib/clickhouse
@@ -953,7 +988,7 @@ services:
     profiles:
       - elasticsearch
       - elasticsearch-ja
-    restart: no
+    restart: always
     volumes:
       - ./elasticsearch/docker-entrypoint.sh:/docker-entrypoint-mount.sh
       - dify_es01_data:/usr/share/elasticsearch/data
@@ -989,7 +1024,7 @@ services:
       - elasticsearch
     depends_on:
       - elasticsearch
-    restart: no
+    restart: always
     environment:
       XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: d1a66dfd-c4d3-4a0a-8290-2abcb83ab3aa
       NO_PROXY: localhost,127.0.0.1,elasticsearch,kibana
@@ -1014,7 +1049,7 @@ services:
     image: downloads.unstructured.io/unstructured-io/unstructured-api:latest
     profiles:
       - unstructured
-    restart: no
+    restart: always
     volumes:
       - ./volumes/unstructured:/app/data
 
