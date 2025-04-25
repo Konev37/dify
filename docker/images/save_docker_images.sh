@@ -5,8 +5,8 @@ mkdir -p images
 
 # 导出默认服务使用的镜像
 echo "正在导出默认服务的镜像..."
-docker save langgenius/dify-api:1.1.3 -o images/dify-api.tar
-docker save langgenius/dify-web:1.1.3 -o images/dify-web.tar
+docker save langgenius/dify-api:1.2.0 -o images/dify-api.tar
+docker save langgenius/dify-web:1.2.0 -o images/dify-web.tar
 docker save postgres:15-alpine -o images/postgres.tar
 docker save redis:6-alpine -o images/redis.tar
 docker save langgenius/dify-sandbox:0.2.11 -o images/dify-sandbox.tar
