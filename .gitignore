@@ -182,6 +182,7 @@ docker/volumes/pgvecto_rs/data/*
 docker/volumes/couchbase/*
 docker/volumes/oceanbase/*
 docker/volumes/plugin_daemon/*
+docker/volumes/matrixone/*
 !docker/volumes/oceanbase/init.d
 
 docker/nginx/conf.d/default.conf
@@ -195,7 +196,8 @@ sdks/python-client/dist
 sdks/python-client/dify_client.egg-info
 
 .vscode/*
-!.vscode/launch.json
+!.vscode/launch.json.template
+!.vscode/README.md
 pyrightconfig.json
 api/.vscode
 
@@ -211,3 +213,9 @@ plugins.jsonl
 # mise
 mise.toml
 *.tgz
+
+# Next.js build output
+.next/
+
+# AI Assistant
+.roo/

@@ -5,7 +5,6 @@ from flask import Response, request
 from flask_login import user_loaded_from_request, user_logged_in
 from werkzeug.exceptions import NotFound, Unauthorized
 
-import contexts
 from configs import dify_config
 from dify_app import DifyApp
 from extensions.ext_database import db
@@ -58,6 +57,9 @@ def load_user_from_request(request_from_flask_login):
             raise Unauthorized("Invalid Authorization token.")
         decoded = PassportService().verify(auth_token)
         user_id = decoded.get("user_id")
+        source = decoded.get("token_source")
+        if source:
+            raise Unauthorized("Invalid Authorization token.")
         if not user_id:
             raise Unauthorized("Invalid Authorization token.")
 
@@ -82,8 +84,8 @@ def on_user_logged_in(_sender, user):
     Note: AccountService.load_logged_in_account will populate user.current_tenant_id
     through the load_user method, which calls account.set_tenant_id().
     """
-    if user and isinstance(user, Account) and user.current_tenant_id:
-        contexts.tenant_id.set(user.current_tenant_id)
+    # tenant_id context variable removed - using current_user.current_tenant_id directly
+    pass
 
 
 @login_manager.unauthorized_handler

@@ -27,10 +27,11 @@ from core.ops.ops_trace_manager import TraceQueueManager
 from core.prompt.utils.get_thread_messages_length import get_thread_messages_length
 from core.repositories import SQLAlchemyWorkflowNodeExecutionRepository
 from core.repositories.sqlalchemy_workflow_execution_repository import SQLAlchemyWorkflowExecutionRepository
-from core.workflow.repository.workflow_execution_repository import WorkflowExecutionRepository
-from core.workflow.repository.workflow_node_execution_repository import WorkflowNodeExecutionRepository
+from core.workflow.repositories.workflow_execution_repository import WorkflowExecutionRepository
+from core.workflow.repositories.workflow_node_execution_repository import WorkflowNodeExecutionRepository
 from extensions.ext_database import db
 from factories import file_factory
+from libs.flask_utils import preserve_flask_contexts
 from models import Account, App, Conversation, EndUser, Message, Workflow, WorkflowNodeExecutionTriggeredFrom
 from models.enums import WorkflowRunTriggeredFrom
 from services.conversation_service import ConversationService
@@ -158,7 +159,6 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
             trace_manager=trace_manager,
             workflow_run_id=workflow_run_id,
         )
-        contexts.tenant_id.set(application_generate_entity.app_config.tenant_id)
         contexts.plugin_tool_providers.set({})
         contexts.plugin_tool_providers_lock.set(threading.Lock())
 
@@ -240,7 +240,6 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
                 node_id=node_id, inputs=args["inputs"]
             ),
         )
-        contexts.tenant_id.set(application_generate_entity.app_config.tenant_id)
         contexts.plugin_tool_providers.set({})
         contexts.plugin_tool_providers_lock.set(threading.Lock())
 
@@ -316,7 +315,6 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
             extras={"auto_generate_conversation_name": False},
             single_loop_run=AdvancedChatAppGenerateEntity.SingleLoopRunEntity(node_id=node_id, inputs=args["inputs"]),
         )
-        contexts.tenant_id.set(application_generate_entity.app_config.tenant_id)
         contexts.plugin_tool_providers.set({})
         contexts.plugin_tool_providers_lock.set(threading.Lock())
 
@@ -369,6 +367,7 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
         :param user: account or end user
         :param invoke_from: invoke from source
         :param application_generate_entity: application generate entity
+        :param workflow_execution_repository: repository for workflow execution
         :param workflow_node_execution_repository: repository for workflow node execution
         :param conversation: conversation
         :param stream: is stream
@@ -399,7 +398,9 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
             message_id=message.id,
         )
 
-        # new thread
+        # new thread with request context and contextvars
+        context = contextvars.copy_context()
+
         worker_thread = threading.Thread(
             target=self._generate_worker,
             kwargs={
@@ -408,7 +409,7 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
                 "queue_manager": queue_manager,
                 "conversation_id": conversation.id,
                 "message_id": message.id,
-                "context": contextvars.copy_context(),
+                "context": context,
             },
         )
 
@@ -447,9 +448,8 @@ class AdvancedChatAppGenerator(MessageBasedAppGenerator):
         :param message_id: message ID
         :return:
         """
-        for var, val in context.items():
-            var.set(val)
-        with flask_app.app_context():
+
+        with preserve_flask_contexts(flask_app, context_vars=context):
             try:
                 # get conversation and message
                 conversation = self._get_conversation(conversation_id)

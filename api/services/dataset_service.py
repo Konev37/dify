@@ -2,7 +2,7 @@ import copy
 import datetime
 import json
 import logging
-import random
+import secrets
 import time
 import uuid
 from collections import Counter
@@ -477,17 +477,15 @@ class DatasetService:
             if dataset.permission == DatasetPermissionEnum.ONLY_ME and dataset.created_by != user.id:
                 logging.debug(f"User {user.id} does not have permission to access dataset {dataset.id}")
                 raise NoPermissionError("You do not have permission to access this dataset.")
-            if dataset.permission == "partial_members":
-                user_permission = (
-                    db.session.query(DatasetPermission).filter_by(dataset_id=dataset.id, account_id=user.id).first()
-                )
-                if (
-                    not user_permission
-                    and dataset.tenant_id != user.current_tenant_id
-                    and dataset.created_by != user.id
-                ):
-                    logging.debug(f"User {user.id} does not have permission to access dataset {dataset.id}")
-                    raise NoPermissionError("You do not have permission to access this dataset.")
+            if dataset.permission == DatasetPermissionEnum.PARTIAL_TEAM:
+                # For partial team permission, user needs explicit permission or be the creator
+                if dataset.created_by != user.id:
+                    user_permission = (
+                        db.session.query(DatasetPermission).filter_by(dataset_id=dataset.id, account_id=user.id).first()
+                    )
+                    if not user_permission:
+                        logging.debug(f"User {user.id} does not have permission to access dataset {dataset.id}")
+                        raise NoPermissionError("You do not have permission to access this dataset.")
 
     @staticmethod
     def check_dataset_operator_permission(user: Optional[Account] = None, dataset: Optional[Dataset] = None):
@@ -972,7 +970,7 @@ class DocumentService:
             documents.append(document)
             batch = document.batch
         else:
-            batch = time.strftime("%Y%m%d%H%M%S") + str(random.randint(100000, 999999))
+            batch = time.strftime("%Y%m%d%H%M%S") + str(100000 + secrets.randbelow(exclusive_upper_bound=900000))
             # save process rule
             if not dataset_process_rule:
                 process_rule = knowledge_config.process_rule
@@ -1404,16 +1402,16 @@ class DocumentService:
                 knowledge_config.embedding_model,  # type: ignore
             )
             dataset_collection_binding_id = dataset_collection_binding.id
-            if knowledge_config.retrieval_model:
-                retrieval_model = knowledge_config.retrieval_model
-            else:
-                retrieval_model = RetrievalModel(
-                    search_method=RetrievalMethod.SEMANTIC_SEARCH.value,
-                    reranking_enable=False,
-                    reranking_model=RerankingModel(reranking_provider_name="", reranking_model_name=""),
-                    top_k=2,
-                    score_threshold_enabled=False,
-                )
+        if knowledge_config.retrieval_model:
+            retrieval_model = knowledge_config.retrieval_model
+        else:
+            retrieval_model = RetrievalModel(
+                search_method=RetrievalMethod.SEMANTIC_SEARCH.value,
+                reranking_enable=False,
+                reranking_model=RerankingModel(reranking_provider_name="", reranking_model_name=""),
+                top_k=2,
+                score_threshold_enabled=False,
+            )
         # save dataset
         dataset = Dataset(
             tenant_id=tenant_id,
