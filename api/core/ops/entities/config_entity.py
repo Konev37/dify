@@ -87,7 +87,7 @@ class PhoenixConfig(BaseTracingConfig):
     @field_validator("endpoint")
     @classmethod
     def endpoint_validator(cls, v, info: ValidationInfo):
-        return cls.validate_endpoint_url(v, "https://app.phoenix.arize.com")
+        return validate_url_with_path(v, "https://app.phoenix.arize.com")
 
 
 class LangfuseConfig(BaseTracingConfig):
@@ -102,7 +102,7 @@ class LangfuseConfig(BaseTracingConfig):
     @field_validator("host")
     @classmethod
     def host_validator(cls, v, info: ValidationInfo):
-        return cls.validate_endpoint_url(v, "https://api.langfuse.com")
+        return validate_url_with_path(v, "https://api.langfuse.com")
 
 
 class LangSmithConfig(BaseTracingConfig):
@@ -191,7 +191,8 @@ class AliyunConfig(BaseTracingConfig):
     @field_validator("endpoint")
     @classmethod
     def endpoint_validator(cls, v, info: ValidationInfo):
-        return cls.validate_endpoint_url(v, "https://tracing-analysis-dc-hz.aliyuncs.com")
+        # aliyun uses two URL formats, which may include a URL path
+        return validate_url_with_path(v, "https://tracing-analysis-dc-hz.aliyuncs.com")
 
 
 OPS_FILE_PATH = "ops_trace/"
