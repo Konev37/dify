@@ -6,8 +6,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import Float, and_, func, or_, select, text
-from sqlalchemy import cast as sqlalchemy_cast
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import sessionmaker
 
 from core.app.app_config.entities import DatasetRetrieveConfigEntity
@@ -26,19 +25,19 @@ from core.rag.entities.metadata_entities import Condition, MetadataCondition
 from core.rag.retrieval.dataset_retrieval import DatasetRetrieval
 from core.rag.retrieval.retrieval_methods import RetrievalMethod
 from core.variables import (
+    ArrayFileSegment,
+    FileSegment,
     StringSegment,
 )
 from core.variables.segments import ArrayObjectSegment
 from core.workflow.entities import GraphInitParams
 from core.workflow.enums import (
-    ErrorStrategy,
     NodeType,
     WorkflowNodeExecutionMetadataKey,
     WorkflowNodeExecutionStatus,
 )
 from core.workflow.node_events import ModelInvokeCompletedEvent, NodeRunResult
 from core.workflow.nodes.base import LLMUsageTrackingMixin
-from core.workflow.nodes.base.entities import BaseNodeData, RetryConfig
 from core.workflow.nodes.base.node import Node
 from core.workflow.nodes.knowledge_retrieval.template_prompts import (
     METADATA_FILTER_ASSISTANT_PROMPT_1,
@@ -83,10 +82,8 @@ default_retrieval_model = {
 }
 
 
-class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
+class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node[KnowledgeRetrievalNodeData]):
     node_type = NodeType.KNOWLEDGE_RETRIEVAL
-
-    _node_data: KnowledgeRetrievalNodeData
 
     # Instance attributes specific to LLMNode.
     # Output variable for file
@@ -119,46 +116,46 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
             )
         self._llm_file_saver = llm_file_saver
 
-    def init_node_data(self, data: Mapping[str, Any]):
-        self._node_data = KnowledgeRetrievalNodeData.model_validate(data)
-
-    def _get_error_strategy(self) -> ErrorStrategy | None:
-        return self._node_data.error_strategy
-
-    def _get_retry_config(self) -> RetryConfig:
-        return self._node_data.retry_config
-
-    def _get_title(self) -> str:
-        return self._node_data.title
-
-    def _get_description(self) -> str | None:
-        return self._node_data.desc
-
-    def _get_default_value_dict(self) -> dict[str, Any]:
-        return self._node_data.default_value_dict
-
-    def get_base_node_data(self) -> BaseNodeData:
-        return self._node_data
-
     @classmethod
     def version(cls):
         return "1"
 
     def _run(self) -> NodeRunResult:
-        # extract variables
-        variable = self.graph_runtime_state.variable_pool.get(self._node_data.query_variable_selector)
-        if not isinstance(variable, StringSegment):
+        if not self._node_data.query_variable_selector and not self._node_data.query_attachment_selector:
             return NodeRunResult(
-                status=WorkflowNodeExecutionStatus.FAILED,
+                status=WorkflowNodeExecutionStatus.SUCCEEDED,
                 inputs={},
-                error="Query variable is not string type.",
+                process_data={},
+                outputs={},
+                metadata={},
+                llm_usage=LLMUsage.empty_usage(),
             )
-        query = variable.value
-        variables = {"query": query}
-        if not query:
-            return NodeRunResult(
-                status=WorkflowNodeExecutionStatus.FAILED, inputs=variables, error="Query is required."
-            )
+        variables: dict[str, Any] = {}
+        # extract variables
+        if self._node_data.query_variable_selector:
+            variable = self.graph_runtime_state.variable_pool.get(self._node_data.query_variable_selector)
+            if not isinstance(variable, StringSegment):
+                return NodeRunResult(
+                    status=WorkflowNodeExecutionStatus.FAILED,
+                    inputs={},
+                    error="Query variable is not string type.",
+                )
+            query = variable.value
+            variables["query"] = query
+
+        if self._node_data.query_attachment_selector:
+            variable = self.graph_runtime_state.variable_pool.get(self._node_data.query_attachment_selector)
+            if not isinstance(variable, ArrayFileSegment) and not isinstance(variable, FileSegment):
+                return NodeRunResult(
+                    status=WorkflowNodeExecutionStatus.FAILED,
+                    inputs={},
+                    error="Attachments variable is not array file or file type.",
+                )
+            if isinstance(variable, ArrayFileSegment):
+                variables["attachments"] = variable.value
+            else:
+                variables["attachments"] = [variable.value]
+
         # TODO(-LAN-): Move this check outside.
         # check rate limit
         knowledge_rate_limit = FeatureService.get_knowledge_rate_limit(self.tenant_id)
@@ -187,7 +184,7 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
         # retrieve knowledge
         usage = LLMUsage.empty_usage()
         try:
-            results, usage = self._fetch_dataset_retriever(node_data=self._node_data, query=query)
+            results, usage = self._fetch_dataset_retriever(node_data=self._node_data, variables=variables)
             outputs = {"result": ArrayObjectSegment(value=results)}
             return NodeRunResult(
                 status=WorkflowNodeExecutionStatus.SUCCEEDED,
@@ -224,12 +221,16 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
             db.session.close()
 
     def _fetch_dataset_retriever(
-        self, node_data: KnowledgeRetrievalNodeData, query: str
+        self, node_data: KnowledgeRetrievalNodeData, variables: dict[str, Any]
     ) -> tuple[list[dict[str, Any]], LLMUsage]:
         usage = LLMUsage.empty_usage()
         available_datasets = []
         dataset_ids = node_data.dataset_ids
-
+        query = variables.get("query")
+        attachments = variables.get("attachments")
+        metadata_filter_document_ids = None
+        metadata_condition = None
+        metadata_usage = LLMUsage.empty_usage()
         # Subquery: Count the number of available documents for each dataset
         subquery = (
             db.session.query(Document.dataset_id, func.count(Document.id).label("available_document_count"))
@@ -260,13 +261,14 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
             if not dataset:
                 continue
             available_datasets.append(dataset)
-        metadata_filter_document_ids, metadata_condition, metadata_usage = self._get_metadata_filter_condition(
-            [dataset.id for dataset in available_datasets], query, node_data
-        )
-        usage = self._merge_usage(usage, metadata_usage)
+        if query:
+            metadata_filter_document_ids, metadata_condition, metadata_usage = self._get_metadata_filter_condition(
+                [dataset.id for dataset in available_datasets], query, node_data
+            )
+            usage = self._merge_usage(usage, metadata_usage)
         all_documents = []
         dataset_retrieval = DatasetRetrieval()
-        if node_data.retrieval_mode == DatasetRetrieveConfigEntity.RetrieveStrategy.SINGLE:
+        if str(node_data.retrieval_mode) == DatasetRetrieveConfigEntity.RetrieveStrategy.SINGLE and query:
             # fetch model config
             if node_data.single_retrieval_config is None:
                 raise ValueError("single_retrieval_config is required")
@@ -298,36 +300,37 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
                     metadata_filter_document_ids=metadata_filter_document_ids,
                     metadata_condition=metadata_condition,
                 )
-        elif node_data.retrieval_mode == DatasetRetrieveConfigEntity.RetrieveStrategy.MULTIPLE:
+        elif str(node_data.retrieval_mode) == DatasetRetrieveConfigEntity.RetrieveStrategy.MULTIPLE:
             if node_data.multiple_retrieval_config is None:
                 raise ValueError("multiple_retrieval_config is required")
-            if node_data.multiple_retrieval_config.reranking_mode == "reranking_model":
-                if node_data.multiple_retrieval_config.reranking_model:
-                    reranking_model = {
-                        "reranking_provider_name": node_data.multiple_retrieval_config.reranking_model.provider,
-                        "reranking_model_name": node_data.multiple_retrieval_config.reranking_model.model,
-                    }
-                else:
+            match node_data.multiple_retrieval_config.reranking_mode:
+                case "reranking_model":
+                    if node_data.multiple_retrieval_config.reranking_model:
+                        reranking_model = {
+                            "reranking_provider_name": node_data.multiple_retrieval_config.reranking_model.provider,
+                            "reranking_model_name": node_data.multiple_retrieval_config.reranking_model.model,
+                        }
+                    else:
+                        reranking_model = None
+                    weights = None
+                case "weighted_score":
+                    if node_data.multiple_retrieval_config.weights is None:
+                        raise ValueError("weights is required")
                     reranking_model = None
-                weights = None
-            elif node_data.multiple_retrieval_config.reranking_mode == "weighted_score":
-                if node_data.multiple_retrieval_config.weights is None:
-                    raise ValueError("weights is required")
-                reranking_model = None
-                vector_setting = node_data.multiple_retrieval_config.weights.vector_setting
-                weights = {
-                    "vector_setting": {
-                        "vector_weight": vector_setting.vector_weight,
-                        "embedding_provider_name": vector_setting.embedding_provider_name,
-                        "embedding_model_name": vector_setting.embedding_model_name,
-                    },
-                    "keyword_setting": {
-                        "keyword_weight": node_data.multiple_retrieval_config.weights.keyword_setting.keyword_weight
-                    },
-                }
-            else:
-                reranking_model = None
-                weights = None
+                    vector_setting = node_data.multiple_retrieval_config.weights.vector_setting
+                    weights = {
+                        "vector_setting": {
+                            "vector_weight": vector_setting.vector_weight,
+                            "embedding_provider_name": vector_setting.embedding_provider_name,
+                            "embedding_model_name": vector_setting.embedding_model_name,
+                        },
+                        "keyword_setting": {
+                            "keyword_weight": node_data.multiple_retrieval_config.weights.keyword_setting.keyword_weight
+                        },
+                    }
+                case _:
+                    reranking_model = None
+                    weights = None
             all_documents = dataset_retrieval.multiple_retrieve(
                 app_id=self.app_id,
                 tenant_id=self.tenant_id,
@@ -345,6 +348,7 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
                 reranking_enable=node_data.multiple_retrieval_config.reranking_enable,
                 metadata_filter_document_ids=metadata_filter_document_ids,
                 metadata_condition=metadata_condition,
+                attachment_ids=[attachment.related_id for attachment in attachments] if attachments else None,
             )
         usage = self._merge_usage(usage, dataset_retrieval.llm_usage)
 
@@ -353,7 +357,7 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
         retrieval_resource_list = []
         # deal with external documents
         for item in external_documents:
-            source = {
+            source: dict[str, dict[str, str | Any | dict[Any, Any] | None] | Any | str | None] = {
                 "metadata": {
                     "_source": "knowledge",
                     "dataset_id": item.metadata.get("dataset_id"),
@@ -410,21 +414,33 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
                                 "doc_metadata": document.doc_metadata,
                             },
                             "title": document.name,
+                            "files": list(record.files) if record.files else None,
                         }
                         if segment.answer:
                             source["content"] = f"question:{segment.get_sign_content()} \nanswer:{segment.answer}"
                         else:
                             source["content"] = segment.get_sign_content()
+                        # Add summary if available
+                        if record.summary:
+                            source["summary"] = record.summary
                         retrieval_resource_list.append(source)
         if retrieval_resource_list:
             retrieval_resource_list = sorted(
                 retrieval_resource_list,
-                key=lambda x: x["metadata"]["score"] if x["metadata"].get("score") is not None else 0.0,
+                key=self._score,  # type: ignore[arg-type, return-value]
                 reverse=True,
             )
             for position, item in enumerate(retrieval_resource_list, start=1):
-                item["metadata"]["position"] = position
+                item["metadata"]["position"] = position  # type: ignore[index]
         return retrieval_resource_list, usage
+
+    def _score(self, item: dict[str, Any]) -> float:
+        meta = item.get("metadata")
+        if isinstance(meta, dict):
+            s = meta.get("score")
+            if isinstance(s, (int, float)):
+                return float(s)
+        return 0.0
 
     def _get_metadata_filter_condition(
         self, dataset_ids: list, query: str, node_data: KnowledgeRetrievalNodeData
@@ -438,73 +454,74 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
         )
         filters: list[Any] = []
         metadata_condition = None
-        if node_data.metadata_filtering_mode == "disabled":
-            return None, None, usage
-        elif node_data.metadata_filtering_mode == "automatic":
-            automatic_metadata_filters, automatic_usage = self._automatic_metadata_filter_func(
-                dataset_ids, query, node_data
-            )
-            usage = self._merge_usage(usage, automatic_usage)
-            if automatic_metadata_filters:
-                conditions = []
-                for sequence, filter in enumerate(automatic_metadata_filters):
-                    self._process_metadata_filter_func(
-                        sequence,
-                        filter.get("condition", ""),
-                        filter.get("metadata_name", ""),
-                        filter.get("value"),
-                        filters,
-                    )
-                    conditions.append(
-                        Condition(
-                            name=filter.get("metadata_name"),  # type: ignore
-                            comparison_operator=filter.get("condition"),  # type: ignore
-                            value=filter.get("value"),
-                        )
-                    )
-                metadata_condition = MetadataCondition(
-                    logical_operator=node_data.metadata_filtering_conditions.logical_operator
-                    if node_data.metadata_filtering_conditions
-                    else "or",
-                    conditions=conditions,
+        match node_data.metadata_filtering_mode:
+            case "disabled":
+                return None, None, usage
+            case "automatic":
+                automatic_metadata_filters, automatic_usage = self._automatic_metadata_filter_func(
+                    dataset_ids, query, node_data
                 )
-        elif node_data.metadata_filtering_mode == "manual":
-            if node_data.metadata_filtering_conditions:
-                conditions = []
-                for sequence, condition in enumerate(node_data.metadata_filtering_conditions.conditions):  # type: ignore
-                    metadata_name = condition.name
-                    expected_value = condition.value
-                    if expected_value is not None and condition.comparison_operator not in ("empty", "not empty"):
-                        if isinstance(expected_value, str):
-                            expected_value = self.graph_runtime_state.variable_pool.convert_template(
-                                expected_value
-                            ).value[0]
-                            if expected_value.value_type in {"number", "integer", "float"}:
-                                expected_value = expected_value.value
-                            elif expected_value.value_type == "string":
-                                expected_value = re.sub(r"[\r\n\t]+", " ", expected_value.text).strip()
-                            else:
-                                raise ValueError("Invalid expected metadata value type")
-                    conditions.append(
-                        Condition(
-                            name=metadata_name,
-                            comparison_operator=condition.comparison_operator,
-                            value=expected_value,
+                usage = self._merge_usage(usage, automatic_usage)
+                if automatic_metadata_filters:
+                    conditions = []
+                    for sequence, filter in enumerate(automatic_metadata_filters):
+                        DatasetRetrieval.process_metadata_filter_func(
+                            sequence,
+                            filter.get("condition", ""),
+                            filter.get("metadata_name", ""),
+                            filter.get("value"),
+                            filters,
                         )
+                        conditions.append(
+                            Condition(
+                                name=filter.get("metadata_name"),  # type: ignore
+                                comparison_operator=filter.get("condition"),  # type: ignore
+                                value=filter.get("value"),
+                            )
+                        )
+                    metadata_condition = MetadataCondition(
+                        logical_operator=node_data.metadata_filtering_conditions.logical_operator
+                        if node_data.metadata_filtering_conditions
+                        else "or",
+                        conditions=conditions,
                     )
-                    filters = self._process_metadata_filter_func(
-                        sequence,
-                        condition.comparison_operator,
-                        metadata_name,
-                        expected_value,
-                        filters,
+            case "manual":
+                if node_data.metadata_filtering_conditions:
+                    conditions = []
+                    for sequence, condition in enumerate(node_data.metadata_filtering_conditions.conditions):  # type: ignore
+                        metadata_name = condition.name
+                        expected_value = condition.value
+                        if expected_value is not None and condition.comparison_operator not in ("empty", "not empty"):
+                            if isinstance(expected_value, str):
+                                expected_value = self.graph_runtime_state.variable_pool.convert_template(
+                                    expected_value
+                                ).value[0]
+                                if expected_value.value_type in {"number", "integer", "float"}:
+                                    expected_value = expected_value.value
+                                elif expected_value.value_type == "string":
+                                    expected_value = re.sub(r"[\r\n\t]+", " ", expected_value.text).strip()
+                                else:
+                                    raise ValueError("Invalid expected metadata value type")
+                        conditions.append(
+                            Condition(
+                                name=metadata_name,
+                                comparison_operator=condition.comparison_operator,
+                                value=expected_value,
+                            )
+                        )
+                        filters = DatasetRetrieval.process_metadata_filter_func(
+                            sequence,
+                            condition.comparison_operator,
+                            metadata_name,
+                            expected_value,
+                            filters,
+                        )
+                    metadata_condition = MetadataCondition(
+                        logical_operator=node_data.metadata_filtering_conditions.logical_operator,
+                        conditions=conditions,
                     )
-                metadata_condition = MetadataCondition(
-                    logical_operator=node_data.metadata_filtering_conditions.logical_operator,
-                    conditions=conditions,
-                )
-        else:
-            raise ValueError("Invalid metadata filtering mode")
+            case _:
+                raise ValueError("Invalid metadata filtering mode")
         if filters:
             if (
                 node_data.metadata_filtering_conditions
@@ -560,7 +577,7 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
                 prompt_messages=prompt_messages,
                 stop=stop,
                 user_id=self.user_id,
-                structured_output_enabled=self._node_data.structured_output_enabled,
+                structured_output_enabled=self.node_data.structured_output_enabled,
                 structured_output=None,
                 file_saver=self._llm_file_saver,
                 file_outputs=self._file_outputs,
@@ -591,87 +608,6 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
             return [], usage
         return automatic_metadata_filters, usage
 
-    def _process_metadata_filter_func(
-        self, sequence: int, condition: str, metadata_name: str, value: Any, filters: list[Any]
-    ) -> list[Any]:
-        if value is None and condition not in ("empty", "not empty"):
-            return filters
-
-        key = f"{metadata_name}_{sequence}"
-        key_value = f"{metadata_name}_{sequence}_value"
-        match condition:
-            case "contains":
-                filters.append(
-                    (text(f"documents.doc_metadata ->> :{key} LIKE :{key_value}")).params(
-                        **{key: metadata_name, key_value: f"%{value}%"}
-                    )
-                )
-            case "not contains":
-                filters.append(
-                    (text(f"documents.doc_metadata ->> :{key} NOT LIKE :{key_value}")).params(
-                        **{key: metadata_name, key_value: f"%{value}%"}
-                    )
-                )
-            case "start with":
-                filters.append(
-                    (text(f"documents.doc_metadata ->> :{key} LIKE :{key_value}")).params(
-                        **{key: metadata_name, key_value: f"{value}%"}
-                    )
-                )
-            case "end with":
-                filters.append(
-                    (text(f"documents.doc_metadata ->> :{key} LIKE :{key_value}")).params(
-                        **{key: metadata_name, key_value: f"%{value}"}
-                    )
-                )
-            case "in":
-                if isinstance(value, str):
-                    escaped_values = [v.strip().replace("'", "''") for v in str(value).split(",")]
-                    escaped_value_str = ",".join(escaped_values)
-                else:
-                    escaped_value_str = str(value)
-                filters.append(
-                    (text(f"documents.doc_metadata ->> :{key} = any(string_to_array(:{key_value},','))")).params(
-                        **{key: metadata_name, key_value: escaped_value_str}
-                    )
-                )
-            case "not in":
-                if isinstance(value, str):
-                    escaped_values = [v.strip().replace("'", "''") for v in str(value).split(",")]
-                    escaped_value_str = ",".join(escaped_values)
-                else:
-                    escaped_value_str = str(value)
-                filters.append(
-                    (text(f"documents.doc_metadata ->> :{key} != all(string_to_array(:{key_value},','))")).params(
-                        **{key: metadata_name, key_value: escaped_value_str}
-                    )
-                )
-            case "=" | "is":
-                if isinstance(value, str):
-                    filters.append(Document.doc_metadata[metadata_name] == f'"{value}"')
-                else:
-                    filters.append(sqlalchemy_cast(Document.doc_metadata[metadata_name].astext, Float) == value)
-            case "is not" | "≠":
-                if isinstance(value, str):
-                    filters.append(Document.doc_metadata[metadata_name] != f'"{value}"')
-                else:
-                    filters.append(sqlalchemy_cast(Document.doc_metadata[metadata_name].astext, Float) != value)
-            case "empty":
-                filters.append(Document.doc_metadata[metadata_name].is_(None))
-            case "not empty":
-                filters.append(Document.doc_metadata[metadata_name].isnot(None))
-            case "before" | "<":
-                filters.append(sqlalchemy_cast(Document.doc_metadata[metadata_name].astext, Float) < value)
-            case "after" | ">":
-                filters.append(sqlalchemy_cast(Document.doc_metadata[metadata_name].astext, Float) > value)
-            case "≤" | "<=":
-                filters.append(sqlalchemy_cast(Document.doc_metadata[metadata_name].astext, Float) <= value)
-            case "≥" | ">=":
-                filters.append(sqlalchemy_cast(Document.doc_metadata[metadata_name].astext, Float) >= value)
-            case _:
-                pass
-        return filters
-
     @classmethod
     def _extract_variable_selector_to_variable_mapping(
         cls,
@@ -685,7 +621,10 @@ class KnowledgeRetrievalNode(LLMUsageTrackingMixin, Node):
         typed_node_data = KnowledgeRetrievalNodeData.model_validate(node_data)
 
         variable_mapping = {}
-        variable_mapping[node_id + ".query"] = typed_node_data.query_variable_selector
+        if typed_node_data.query_variable_selector:
+            variable_mapping[node_id + ".query"] = typed_node_data.query_variable_selector
+        if typed_node_data.query_attachment_selector:
+            variable_mapping[node_id + ".queryAttachment"] = typed_node_data.query_attachment_selector
         return variable_mapping
 
     def get_model_config(self, model: ModelConfig) -> tuple[ModelInstance, ModelConfigWithCredentialsEntity]:

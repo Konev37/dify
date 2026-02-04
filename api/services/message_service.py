@@ -164,6 +164,7 @@ class MessageService:
         elif not rating and not feedback:
             raise ValueError("rating cannot be None when feedback not exists")
         else:
+            assert rating is not None
             feedback = MessageFeedback(
                 app_id=app_model.id,
                 conversation_id=message.conversation_id,
@@ -260,10 +261,9 @@ class MessageService:
             else:
                 conversation_override_model_configs = json.loads(conversation.override_model_configs)
                 app_model_config = AppModelConfig(
-                    id=conversation.app_model_config_id,
                     app_id=app_model.id,
                 )
-
+                app_model_config.id = conversation.app_model_config_id
                 app_model_config = app_model_config.from_model_config_dict(conversation_override_model_configs)
             if not app_model_config:
                 raise ValueError("did not find app model config")

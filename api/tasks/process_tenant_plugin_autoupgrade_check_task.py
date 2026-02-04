@@ -1,4 +1,5 @@
 import json
+import logging
 import operator
 import typing
 
@@ -12,9 +13,11 @@ from core.plugin.impl.plugin import PluginInstaller
 from extensions.ext_redis import redis_client
 from models.account import TenantPluginAutoUpgradeStrategy
 
+logger = logging.getLogger(__name__)
+
 RETRY_TIMES_OF_ONE_PLUGIN_IN_ONE_TENANT = 3
 CACHE_REDIS_KEY_PREFIX = "plugin_autoupgrade_check_task:cached_plugin_manifests:"
-CACHE_REDIS_TTL = 60 * 15  # 15 minutes
+CACHE_REDIS_TTL = 60 * 60  # 1 hour
 
 
 def _get_redis_cache_key(plugin_id: str) -> str:
@@ -42,6 +45,7 @@ def _get_cached_manifest(plugin_id: str) -> typing.Union[MarketplacePluginDeclar
 
         return MarketplacePluginDeclaration.model_validate(cached_json)
     except Exception:
+        logger.exception("Failed to get cached manifest for plugin %s", plugin_id)
         return False
 
 
@@ -63,7 +67,7 @@ def _set_cached_manifest(plugin_id: str, manifest: typing.Union[MarketplacePlugi
     except Exception:
         # If Redis fails, continue without caching
         # traceback.print_exc()
-        pass
+        logger.exception("Failed to set cached manifest for plugin %s", plugin_id)
 
 
 def marketplace_batch_fetch_plugin_manifests(

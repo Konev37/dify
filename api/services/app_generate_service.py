@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import uuid
 from collections.abc import Generator, Mapping
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from configs import dify_config
 from core.app.apps.advanced_chat.app_generator import AdvancedChatAppGenerator
@@ -10,20 +12,21 @@ from core.app.apps.completion.app_generator import CompletionAppGenerator
 from core.app.apps.workflow.app_generator import WorkflowAppGenerator
 from core.app.entities.app_invoke_entities import InvokeFrom
 from core.app.features.rate_limiting import RateLimit
-from enums.cloud_plan import CloudPlan
-from libs.helper import RateLimiter
+from enums.quota_type import QuotaType, unlimited
+from extensions.otel import AppGenerateHandler, trace_span
 from models.model import Account, App, AppMode, EndUser
 from models.workflow import Workflow
-from services.billing_service import BillingService
-from services.errors.app import WorkflowIdFormatError, WorkflowNotFoundError
+from services.errors.app import QuotaExceededError, WorkflowIdFormatError, WorkflowNotFoundError
 from services.errors.llm import InvokeRateLimitError
 from services.workflow_service import WorkflowService
 
+if TYPE_CHECKING:
+    from controllers.console.app.workflow import LoopNodeRunPayload
+
 
 class AppGenerateService:
-    system_rate_limiter = RateLimiter("app_daily_rate_limiter", dify_config.APP_DAILY_RATE_LIMIT, 86400)
-
     @classmethod
+    @trace_span(AppGenerateHandler)
     def generate(
         cls,
         app_model: App,
@@ -31,6 +34,7 @@ class AppGenerateService:
         args: Mapping[str, Any],
         invoke_from: InvokeFrom,
         streaming: bool = True,
+        root_node_id: str | None = None,
     ):
         """
         App Content Generate
@@ -41,17 +45,12 @@ class AppGenerateService:
         :param streaming: streaming
         :return:
         """
-        # system level rate limiter
+        quota_charge = unlimited()
         if dify_config.BILLING_ENABLED:
-            # check if it's free plan
-            limit_info = BillingService.get_info(app_model.tenant_id)
-            if limit_info["subscription"]["plan"] == CloudPlan.SANDBOX:
-                if cls.system_rate_limiter.is_rate_limited(app_model.tenant_id):
-                    raise InvokeRateLimitError(
-                        "Rate limit exceeded, please upgrade your plan "
-                        f"or your RPD was {dify_config.APP_DAILY_RATE_LIMIT} requests/day"
-                    )
-                cls.system_rate_limiter.increment_rate_limit(app_model.tenant_id)
+            try:
+                quota_charge = QuotaType.WORKFLOW.consume(app_model.tenant_id)
+            except QuotaExceededError:
+                raise InvokeRateLimitError(f"Workflow execution quota limit reached for tenant {app_model.tenant_id}")
 
         # app level rate limiter
         max_active_request = cls._get_max_active_requests(app_model)
@@ -114,6 +113,7 @@ class AppGenerateService:
                             args=args,
                             invoke_from=invoke_from,
                             streaming=streaming,
+                            root_node_id=root_node_id,
                             call_depth=0,
                         ),
                     ),
@@ -122,6 +122,7 @@ class AppGenerateService:
             else:
                 raise ValueError(f"Invalid app mode {app_model.mode}")
         except Exception:
+            quota_charge.refund()
             rate_limit.exit(request_id)
             raise
         finally:
@@ -142,7 +143,7 @@ class AppGenerateService:
         Returns:
             The maximum number of active requests allowed
         """
-        app_limit = app.max_active_requests or 0
+        app_limit = app.max_active_requests or dify_config.APP_DEFAULT_ACTIVE_REQUESTS
         config_limit = dify_config.APP_MAX_ACTIVE_REQUESTS
 
         # Filter out infinite (0) values and return the minimum, or 0 if both are infinite
@@ -169,7 +170,9 @@ class AppGenerateService:
             raise ValueError(f"Invalid app mode {app_model.mode}")
 
     @classmethod
-    def generate_single_loop(cls, app_model: App, user: Account, node_id: str, args: Any, streaming: bool = True):
+    def generate_single_loop(
+        cls, app_model: App, user: Account, node_id: str, args: LoopNodeRunPayload, streaming: bool = True
+    ):
         if app_model.mode == AppMode.ADVANCED_CHAT:
             workflow = cls._get_workflow(app_model, InvokeFrom.DEBUGGER)
             return AdvancedChatAppGenerator.convert_to_event_stream(

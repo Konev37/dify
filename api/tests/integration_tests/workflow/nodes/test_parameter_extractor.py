@@ -4,11 +4,11 @@ import uuid
 from unittest.mock import MagicMock
 
 from core.app.entities.app_invoke_entities import InvokeFrom
+from core.app.workflow.node_factory import DifyNodeFactory
 from core.model_runtime.entities import AssistantPromptMessage
 from core.workflow.entities import GraphInitParams
 from core.workflow.enums import WorkflowNodeExecutionStatus
 from core.workflow.graph import Graph
-from core.workflow.nodes.node_factory import DifyNodeFactory
 from core.workflow.nodes.parameter_extractor.parameter_extractor_node import ParameterExtractorNode
 from core.workflow.runtime import GraphRuntimeState, VariablePool
 from core.workflow.system_variable import SystemVariable
@@ -85,7 +85,6 @@ def init_parameter_extractor_node(config: dict):
         graph_init_params=init_params,
         graph_runtime_state=graph_runtime_state,
     )
-    node.init_node_data(config.get("data", {}))
     return node
 
 

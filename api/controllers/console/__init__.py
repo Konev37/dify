@@ -66,6 +66,7 @@ from .app import (
     workflow_draft_variable,
     workflow_run,
     workflow_statistic,
+    workflow_trigger,
 )
 
 # Import auth controllers
@@ -106,10 +107,12 @@ from .datasets.rag_pipeline import (
 
 # Import explore controllers
 from .explore import (
+    banner,
     installed_app,
     parameter,
     recommended_app,
     saved_message,
+    trial,
 )
 
 # Import tag controllers
@@ -126,6 +129,7 @@ from .workspace import (
     models,
     plugin,
     tool_providers,
+    trigger_providers,
     workspace,
 )
 
@@ -143,6 +147,7 @@ __all__ = [
     "apikey",
     "app",
     "audio",
+    "banner",
     "billing",
     "bp",
     "completion",
@@ -196,6 +201,8 @@ __all__ = [
     "statistic",
     "tags",
     "tool_providers",
+    "trial",
+    "trigger_providers",
     "version",
     "website",
     "workflow",
@@ -203,5 +210,6 @@ __all__ = [
     "workflow_draft_variable",
     "workflow_run",
     "workflow_statistic",
+    "workflow_trigger",
     "workspace",
 ]

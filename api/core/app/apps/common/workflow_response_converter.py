@@ -1,3 +1,4 @@
+import logging
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from core.file import FILE_MODEL_IDENTITY, File
 from core.plugin.impl.datasource import PluginDatasourceManager
 from core.tools.entities.tool_entities import ToolProviderType
 from core.tools.tool_manager import ToolManager
+from core.trigger.trigger_manager import TriggerManager
 from core.variables.segments import ArrayFileSegment, FileSegment, Segment
 from core.workflow.enums import (
     NodeType,
@@ -54,6 +56,7 @@ from models import Account, EndUser
 from services.variable_truncator import BaseTruncator, DummyVariableTruncator, VariableTruncator
 
 NodeExecutionId = NewType("NodeExecutionId", str)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -247,7 +250,7 @@ class WorkflowResponseConverter:
             data=WorkflowFinishStreamResponse.Data(
                 id=run_id,
                 workflow_id=workflow_id,
-                status=status.value,
+                status=status,
                 outputs=encoded_outputs,
                 error=error,
                 elapsed_time=elapsed_time,
@@ -288,21 +291,30 @@ class WorkflowResponseConverter:
             ),
         )
 
-        if event.node_type == NodeType.TOOL:
-            response.data.extras["icon"] = ToolManager.get_tool_icon(
-                tenant_id=self._application_generate_entity.app_config.tenant_id,
-                provider_type=ToolProviderType(event.provider_type),
-                provider_id=event.provider_id,
-            )
-        elif event.node_type == NodeType.DATASOURCE:
-            manager = PluginDatasourceManager()
-            provider_entity = manager.fetch_datasource_provider(
-                self._application_generate_entity.app_config.tenant_id,
-                event.provider_id,
-            )
-            response.data.extras["icon"] = provider_entity.declaration.identity.generate_datasource_icon_url(
-                self._application_generate_entity.app_config.tenant_id
-            )
+        try:
+            if event.node_type == NodeType.TOOL:
+                response.data.extras["icon"] = ToolManager.get_tool_icon(
+                    tenant_id=self._application_generate_entity.app_config.tenant_id,
+                    provider_type=ToolProviderType(event.provider_type),
+                    provider_id=event.provider_id,
+                )
+            elif event.node_type == NodeType.DATASOURCE:
+                manager = PluginDatasourceManager()
+                provider_entity = manager.fetch_datasource_provider(
+                    self._application_generate_entity.app_config.tenant_id,
+                    event.provider_id,
+                )
+                response.data.extras["icon"] = provider_entity.declaration.identity.generate_datasource_icon_url(
+                    self._application_generate_entity.app_config.tenant_id
+                )
+            elif event.node_type == NodeType.TRIGGER_PLUGIN:
+                response.data.extras["icon"] = TriggerManager.get_trigger_plugin_icon(
+                    self._application_generate_entity.app_config.tenant_id,
+                    event.provider_id,
+                )
+        except Exception:
+            # metadata fetch may fail, for example, the plugin daemon is down or plugin is uninstalled.
+            logger.warning("failed to fetch icon for %s", event.provider_id)
 
         return response
 
@@ -328,13 +340,13 @@ class WorkflowResponseConverter:
         metadata = self._merge_metadata(event.execution_metadata, snapshot)
 
         if isinstance(event, QueueNodeSucceededEvent):
-            status = WorkflowNodeExecutionStatus.SUCCEEDED.value
+            status = WorkflowNodeExecutionStatus.SUCCEEDED
             error_message = event.error
         elif isinstance(event, QueueNodeFailedEvent):
-            status = WorkflowNodeExecutionStatus.FAILED.value
+            status = WorkflowNodeExecutionStatus.FAILED
             error_message = event.error
         else:
-            status = WorkflowNodeExecutionStatus.EXCEPTION.value
+            status = WorkflowNodeExecutionStatus.EXCEPTION
             error_message = event.error
 
         return NodeFinishStreamResponse(
@@ -401,7 +413,7 @@ class WorkflowResponseConverter:
                 process_data_truncated=process_data_truncated,
                 outputs=outputs,
                 outputs_truncated=outputs_truncated,
-                status=WorkflowNodeExecutionStatus.RETRY.value,
+                status=WorkflowNodeExecutionStatus.RETRY,
                 error=event.error,
                 elapsed_time=elapsed_time,
                 execution_metadata=metadata,

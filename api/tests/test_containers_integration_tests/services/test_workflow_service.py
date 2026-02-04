@@ -584,7 +584,16 @@ class TestWorkflowService:
         account = self._create_test_account(db_session_with_containers, fake)
         app = self._create_test_app(db_session_with_containers, fake)
 
-        graph = {"nodes": [{"id": "start", "type": "start"}], "edges": []}
+        graph = {
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "start",
+                    "data": {"type": "start", "title": "Start"},
+                }
+            ],
+            "edges": [],
+        }
         features = {"features": ["feature1", "feature2"]}
         # Don't pre-calculate hash, let the service generate it
         unique_hash = None
@@ -632,7 +641,25 @@ class TestWorkflowService:
         # Get the actual hash that was generated
         original_hash = existing_workflow.unique_hash
 
-        new_graph = {"nodes": [{"id": "start", "type": "start"}, {"id": "end", "type": "end"}], "edges": []}
+        new_graph = {
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "start",
+                    "data": {"type": "start", "title": "Start"},
+                },
+                {
+                    "id": "end",
+                    "type": "end",
+                    "data": {
+                        "type": "end",
+                        "title": "End",
+                        "outputs": [{"variable": "output", "value_selector": ["start", "text"]}],
+                    },
+                },
+            ],
+            "edges": [],
+        }
         new_features = {"features": ["feature1", "feature2", "feature3"]}
 
         environment_variables = []
@@ -679,7 +706,16 @@ class TestWorkflowService:
         # Get the actual hash that was generated
         original_hash = existing_workflow.unique_hash
 
-        new_graph = {"nodes": [{"id": "start", "type": "start"}], "edges": []}
+        new_graph = {
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "start",
+                    "data": {"type": "start", "title": "Start"},
+                }
+            ],
+            "edges": [],
+        }
         new_features = {"features": ["feature1"]}
         # Use a different hash to trigger the error
         mismatched_hash = "different_hash_12345"
@@ -889,24 +925,24 @@ class TestWorkflowService:
         # Create app model config (required for conversion)
         from models.model import AppModelConfig
 
-        app_model_config = AppModelConfig()
-        app_model_config.id = fake.uuid4()
-        app_model_config.app_id = app.id
-        app_model_config.tenant_id = app.tenant_id
-        app_model_config.provider = "openai"
-        app_model_config.model_id = "gpt-3.5-turbo"
-        # Set the model field directly - this is what model_dict property returns
-        app_model_config.model = json.dumps(
-            {
-                "provider": "openai",
-                "name": "gpt-3.5-turbo",
-                "completion_params": {"max_tokens": 1000, "temperature": 0.7},
-            }
+        app_model_config = AppModelConfig(
+            app_id=app.id,
+            provider="openai",
+            model_id="gpt-3.5-turbo",
+            # Set the model field directly - this is what model_dict property returns
+            model=json.dumps(
+                {
+                    "provider": "openai",
+                    "name": "gpt-3.5-turbo",
+                    "completion_params": {"max_tokens": 1000, "temperature": 0.7},
+                }
+            ),
+            # Set pre_prompt for PromptTemplateConfigManager
+            pre_prompt="You are a helpful assistant.",
+            created_by=account.id,
+            updated_by=account.id,
         )
-        # Set pre_prompt for PromptTemplateConfigManager
-        app_model_config.pre_prompt = "You are a helpful assistant."
-        app_model_config.created_by = account.id
-        app_model_config.updated_by = account.id
+        app_model_config.id = fake.uuid4()
 
         from extensions.ext_database import db
 
@@ -951,24 +987,24 @@ class TestWorkflowService:
         # Create app model config (required for conversion)
         from models.model import AppModelConfig
 
-        app_model_config = AppModelConfig()
-        app_model_config.id = fake.uuid4()
-        app_model_config.app_id = app.id
-        app_model_config.tenant_id = app.tenant_id
-        app_model_config.provider = "openai"
-        app_model_config.model_id = "gpt-3.5-turbo"
-        # Set the model field directly - this is what model_dict property returns
-        app_model_config.model = json.dumps(
-            {
-                "provider": "openai",
-                "name": "gpt-3.5-turbo",
-                "completion_params": {"max_tokens": 1000, "temperature": 0.7},
-            }
+        app_model_config = AppModelConfig(
+            app_id=app.id,
+            provider="openai",
+            model_id="gpt-3.5-turbo",
+            # Set the model field directly - this is what model_dict property returns
+            model=json.dumps(
+                {
+                    "provider": "openai",
+                    "name": "gpt-3.5-turbo",
+                    "completion_params": {"max_tokens": 1000, "temperature": 0.7},
+                }
+            ),
+            # Set pre_prompt for PromptTemplateConfigManager
+            pre_prompt="Complete the following text:",
+            created_by=account.id,
+            updated_by=account.id,
         )
-        # Set pre_prompt for PromptTemplateConfigManager
-        app_model_config.pre_prompt = "Complete the following text:"
-        app_model_config.created_by = account.id
-        app_model_config.updated_by = account.id
+        app_model_config.id = fake.uuid4()
 
         from extensions.ext_database import db
 

@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
 from collections.abc import Mapping, Sequence
-from collections.abc import Mapping as TypingMapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from pydantic.json import pydantic_encoder
 
 from core.model_runtime.entities.llm_entities import LLMUsage
+from core.workflow.entities.pause_reason import PauseReason
+from core.workflow.enums import NodeExecutionType, NodeState, NodeType
 from core.workflow.runtime.variable_pool import VariablePool
 
 
@@ -47,7 +49,11 @@ class ReadyQueueProtocol(Protocol):
 
 
 class GraphExecutionProtocol(Protocol):
-    """Structural interface for graph execution aggregate."""
+    """Structural interface for graph execution aggregate.
+
+    Defines the minimal set of attributes and methods required from a GraphExecution entity
+    for runtime orchestration and state management.
+    """
 
     workflow_id: str
     started: bool
@@ -55,6 +61,7 @@ class GraphExecutionProtocol(Protocol):
     aborted: bool
     error: Exception | None
     exceptions_count: int
+    pause_reasons: list[PauseReason]
 
     def start(self) -> None:
         """Transition execution into the running state."""
@@ -97,14 +104,33 @@ class ResponseStreamCoordinatorProtocol(Protocol):
         ...
 
 
+class NodeProtocol(Protocol):
+    """Structural interface for graph nodes."""
+
+    id: str
+    state: NodeState
+    execution_type: NodeExecutionType
+    node_type: ClassVar[NodeType]
+
+    def blocks_variable_output(self, variable_selectors: set[tuple[str, ...]]) -> bool: ...
+
+
+class EdgeProtocol(Protocol):
+    id: str
+    state: NodeState
+    tail: str
+    head: str
+    source_handle: str
+
+
 class GraphProtocol(Protocol):
     """Structural interface required from graph instances attached to the runtime state."""
 
-    nodes: TypingMapping[str, object]
-    edges: TypingMapping[str, object]
-    root_node: object
+    nodes: Mapping[str, NodeProtocol]
+    edges: Mapping[str, EdgeProtocol]
+    root_node: NodeProtocol
 
-    def get_outgoing_edges(self, node_id: str) -> Sequence[object]: ...
+    def get_outgoing_edges(self, node_id: str) -> Sequence[EdgeProtocol]: ...
 
 
 @dataclass(slots=True)
@@ -163,6 +189,7 @@ class GraphRuntimeState:
         self._pending_response_coordinator_dump: str | None = None
         self._pending_graph_execution_workflow_id: str | None = None
         self._paused_nodes: set[str] = set()
+        self.stop_event: threading.Event = threading.Event()
 
         if graph is not None:
             self.attach_graph(graph)

@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
+from uuid import uuid4
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -28,6 +31,8 @@ class SystemVariable(BaseModel):
     # To maintain compatibility, they are marked as optional here.
     app_id: str | None = None
     workflow_id: str | None = None
+
+    timestamp: int | None = None
 
     files: Sequence[File] = Field(default_factory=list)
 
@@ -68,8 +73,8 @@ class SystemVariable(BaseModel):
         return data
 
     @classmethod
-    def empty(cls) -> "SystemVariable":
-        return cls()
+    def default(cls) -> SystemVariable:
+        return cls(workflow_execution_id=str(uuid4()))
 
     def to_dict(self) -> dict[SystemVariableKey, Any]:
         # NOTE: This method is provided for compatibility with legacy code.
@@ -108,9 +113,11 @@ class SystemVariable(BaseModel):
             d[SystemVariableKey.DATASOURCE_INFO] = self.datasource_info
         if self.invoke_from is not None:
             d[SystemVariableKey.INVOKE_FROM] = self.invoke_from
+        if self.timestamp is not None:
+            d[SystemVariableKey.TIMESTAMP] = self.timestamp
         return d
 
-    def as_view(self) -> "SystemVariableReadOnlyView":
+    def as_view(self) -> SystemVariableReadOnlyView:
         return SystemVariableReadOnlyView(self)
 
 
